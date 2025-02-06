@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"time"
 
+	. "github.com/onsi/ginkgo"
 	v1 "k8s.io/api/core/v1"
 
-	. "github.com/onsi/ginkgo"
 	"github.com/oracle/oci-cloud-controller-manager/test/e2e/framework"
 )
 
@@ -96,6 +96,35 @@ var _ = Describe("CSI RWX Raw Block Volume Creation", func() {
 	})
 })
 
+var _ = Describe("CSI RWX Raw Block Volume Deletion", func() {
+	f := framework.NewDefaultFramework("csi-basic")
+	Context("[cloudprovider][storage][csi][system-tags][raw-block][rwx]", func() {
+		It("Create RWX raw block PVC and POD for CSI then delete the PV", func() {
+			pvcJig := framework.NewPVCTestJig(f.ClientSet, "csi-provisioner-e2e-tests")
+			scName := f.CreateStorageClassOrFail(f.Namespace.Name, "blockvolume.csi.oraclecloud.com", nil, pvcJig.Labels, "WaitForFirstConsumer", false, "Delete", nil)
+			pvc := pvcJig.CreateAndAwaitPVCOrFailCSI(f.Namespace.Name, framework.MinVolumeBlock, scName, nil, v1.PersistentVolumeBlock, v1.ReadWriteMany, v1.ClaimPending)
+			f.VolumeIds = append(f.VolumeIds, pvc.Spec.VolumeName)
+			pvcJig.NewPodForCSI("app1", f.Namespace.Name, pvc.Name, setupF.AdLabel, v1.PersistentVolumeBlock)
+
+			time.Sleep(60 * time.Second) //waiting for pod to up and running
+
+			err := pvcJig.DeleteAndAwaitPod(f.Namespace.Name, "app1")
+			if err != nil {
+				framework.Failf("Error deleting pod: %v", err)
+			}
+			err = pvcJig.DeleteAndAwaitPVC(f.Namespace.Name, pvc.Name)
+			if err != nil {
+				framework.Failf("Error deleting PVC: %v", err)
+			}
+
+			err = pvcJig.DeleteAndAwaitPV(f.BlockStorageClient, pvc.Spec.VolumeName, f.Namespace.Name)
+			if err != nil {
+				framework.Failf("Error deleting PV: %v", err)
+			}
+		})
+	})
+})
+
 var _ = Describe("CSI RWX Raw Block Volume MULTI_NODE", func() {
 	f := framework.NewDefaultFramework("csi-basic")
 	Context("[cloudprovider][storage][csi][raw-block][rwx]", func() {
@@ -139,7 +168,6 @@ var _ = Describe("CSI RWX Raw Block Volume MULTI_NODE", func() {
 
 		It("Create RWX raw block PVC, schedule a pod on each worker node, delete one of the pods", func() {
 			pvcJig := framework.NewPVCTestJig(f.ClientSet, "csi-provisioner-e2e-tests")
-
 			nodes := pvcJig.ListSchedulableNodes()
 			if len(nodes) < 2 {
 				Skip(fmt.Sprintf("at least 2 schedulable nodes required to test MULTI_NODE %s", f.Namespace.Name))
@@ -167,6 +195,7 @@ var _ = Describe("CSI RWX Raw Block Volume MULTI_NODE", func() {
 			pvcJig.CheckExpandedRawBlockVolumeReadWrite(f.Namespace.Name, pods[1])
 			pvcJig.ExtractDataFromBlockDevice(f.Namespace.Name, pods[1], "/dev/xvda", "/tmp/testdata.txt")
 			// pvcJig.CheckFileCorruption(f.Namespace.Name, pods[1], "/tmp", "testdata.txt")
+
 		})
 	})
 })

@@ -42,6 +42,7 @@ import (
 	"github.com/oracle/oci-cloud-controller-manager/pkg/csi/driver"
 	"github.com/oracle/oci-cloud-controller-manager/pkg/oci/client"
 	"github.com/oracle/oci-cloud-controller-manager/pkg/volume/provisioner/plugin"
+	"github.com/oracle/oci-go-sdk/v65/common"
 )
 
 const (
@@ -1382,6 +1383,69 @@ func (j *PVCTestJig) CheckVolumeCapacity(expected string, name string, namespace
 	if actual.String() != expected {
 		Failf("Expected volume to be %s but got %s", expected, actual)
 	}
+}
+
+func (j *PVCTestJig) DeleteAndAwaitPV(bs ocicore.BlockstorageClient, pvName string, namespace string) error {
+	pv, err := j.KubeClient.CoreV1().PersistentVolumes().Get(context.Background(), pvName, metav1.GetOptions{})
+	volId := pv.Spec.CSI.VolumeHandle
+
+	// Delete the PV
+	err = j.KubeClient.CoreV1().PersistentVolumes().Delete(context.Background(), pvName, metav1.DeleteOptions{})
+	if err != nil {
+		Failf("Error deleting Pod %s: %v", pvName, err)
+	}
+
+	// Verify the PV is deleted
+	Eventually(func() bool {
+		_, err := j.KubeClient.CoreV1().PersistentVolumes().Get(context.Background(), pvName, metav1.GetOptions{})
+		return apierrors.IsNotFound(err) // PV should be deleted or not found
+	}, 2*time.Minute, time.Second*5).Should(BeTrue(), "PV %q should be deleted successfully", pvName)
+
+	// Delete the volume
+	deleteRequest := ocicore.DeleteVolumeRequest{
+		VolumeId: &volId,
+	}
+	_, err = bs.DeleteVolume(context.Background(), deleteRequest)
+	Expect(err).NotTo(HaveOccurred(), "Failed to delete volume %q", volId)
+
+	// Verify the volume is deleted
+	Eventually(func() bool {
+		_, err := bs.GetVolume(context.Background(), ocicore.GetVolumeRequest{VolumeId: &volId})
+		if err != nil {
+			if ociErr, ok := err.(common.ServiceError); ok && ociErr.GetHTTPStatusCode() == 404 {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Minute, 5*time.Second).Should(BeTrue(), "Expected volume %q to be deleted, but it still exists", volId)
+
+	return nil
+}
+
+func (j *PVCTestJig) DeleteAndAwaitVolume(bs ocicore.BlockstorageClient, volumeName string, namespace string) {
+	// Get the bound PV
+	pv, err := j.KubeClient.CoreV1().PersistentVolumes().Get(context.Background(), volumeName, metav1.GetOptions{})
+	Expect(err).NotTo(HaveOccurred(), "Failed to get PV %s", volumeName)
+
+	volId := pv.Spec.CSI.VolumeHandle
+
+	// Delete the volume
+	deleteRequest := ocicore.DeleteVolumeRequest{
+		VolumeId: &volId,
+	}
+	_, err = bs.DeleteVolume(context.Background(), deleteRequest)
+	Expect(err).NotTo(HaveOccurred(), "Failed to delete volume %q", volId)
+
+	// Verify the volume is deleted
+	Eventually(func() bool {
+		_, err := bs.GetVolume(context.Background(), ocicore.GetVolumeRequest{VolumeId: &volId})
+		if err != nil {
+			if ociErr, ok := err.(common.ServiceError); ok && ociErr.GetHTTPStatusCode() == 404 {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Minute, 5*time.Second).Should(BeTrue(), "Expected volume %q to be deleted, but it still exists", volId)
 }
 
 // CheckVolumePerformanceLevel verifies the Performance level of Volume provisioned.
